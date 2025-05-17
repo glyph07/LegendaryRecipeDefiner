@@ -6,12 +6,12 @@ The **Legendary Recipe Definer** project is a mod built for [Potion Craft](https
 This mod was made using Bepinex, a modding framework commonly used with Unity games. After following the given [installation guide](https://docs.bepinex.dev/articles/user_guide/installation/index.html), you should be able to easily set **Legendary Recipe Definer** up!
 
 If you run into any issues, ensure you have done the following:
-* [Downloaded](https://github.com/BepInEx/BepInEx/releases) the latest version of Bepinex.
+* Downloaded the [latest version](https://github.com/BepInEx/BepInEx/releases) of Bepinex.
 * Extracted its contents into the same folder as the Potion Craft executable.
 * Run the game at least once to generate the configuration files.
 
 ### Legendary Recipe Definer
-At this point, download the latest [release](https://github.com/glyph07/LegendaryRecipeDefiner/releases) of **Legendary Recipe Definer**. Extract the release directly into the `Potion Craft/Bepinex/plugins` directory. Everything should be fully installed at this point!
+At this point, download the [latest release](https://github.com/glyph07/LegendaryRecipeDefiner/releases) of **Legendary Recipe Definer**. Extract the release directly into the `Potion Craft/Bepinex/plugins` directory. Everything should be fully installed at this point!
 
 ## Editing Recipes
 ### Format
