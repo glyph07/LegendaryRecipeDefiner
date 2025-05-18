@@ -12,10 +12,10 @@ using PotionCraft.ScriptableObjects;
 using PotionCraft.ScriptableObjects.AlchemyMachineProducts;
 using PotionCraft.ManagersSystem;
 using PotionCraft.ManagersSystem.SaveLoad;
+using PotionCraft.ManagersSystem.Ingredient;
 using PotionCraft.QuestSystem.DesiredItems;
 using PotionCraft.ObjectBased.AlchemyMachine;
 using PotionCraft.ObjectBased.UIElements.Bookmarks;
-using PotionCraft.ObjectBased.AlchemyMachineProduct;
 using PotionCraft.ObjectBased.UIElements.Books.RecipeBook;
 
 
@@ -28,6 +28,7 @@ namespace LegendaryRecipeDefiner
         public const string pluginName = "LegendaryRecipeDefiner";
         public const string pluginVersion = "1.0.0.0";
 
+        static string current_directory = "";
         static string target_recipes = "";
         static bool error_op = true;
 
@@ -37,25 +38,30 @@ namespace LegendaryRecipeDefiner
 
         public static int lastMinimum = -1;
 
+        public static LegendaryRecipeDefiner Instance { get; set; } = null;
+
 
         public void Awake()
         {
-            Harmony.CreateAndPatchAll(typeof(LegendaryRecipeDefiner));
-            string target = Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location) + "/settings.config";
-            if (!File.Exists(target))
+            if (!Instance)
             {
-                if (error_op)
-                    Debug.LogError("Config file for `LegendaryRecipeDefiner` could not be found.");
-                else
-                    Debug.Log("Config file for `LegendaryRecipeDefiner` could not be found.");
-                return;
+                Instance = this;
+                Harmony.CreateAndPatchAll(typeof(LegendaryRecipeDefiner));
+                current_directory = Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location);
+                string target = current_directory + "/settings.config";
+                if (!File.Exists(target))
+                {
+                    if (error_op)
+                        Debug.LogError("Config file for `LegendaryRecipeDefiner` could not be found.");
+                    else
+                        Debug.Log("Config file for `LegendaryRecipeDefiner` could not be found.");
+                    return;
+                }
+                string config = File.ReadAllText(target);
+                ParseConfig(config);
             }
-            string config = File.ReadAllText(target);
-            ParseConfig(config);
         }
 
-
-        private static bool settingsInit = false;
 
         [Serializable]
         public enum MachinePart
@@ -152,15 +158,11 @@ namespace LegendaryRecipeDefiner
         }
 
 
-        [HarmonyPatch(typeof(PotionCraft.SceneLoader.ProgressBarFiller), "OnBarFilled")]
-        [HarmonyPostfix]
+        [HarmonyPatch(typeof(IngredientManager.LegendaryRecipeSubManager), nameof(IngredientManager.LegendaryRecipeSubManager.OnManagerStart))]
+        [HarmonyPrefix]
         public static void PostSettingInit()
         {
-            if (settingsInit)
-                return;
-
             DeserializeRecipes();
-            settingsInit = true;
         }
 
 
@@ -272,6 +274,7 @@ namespace LegendaryRecipeDefiner
             return result;
         }
 
+
         static SerializedRecipe SerializeRecipe(string name)
         {
             LegendaryRecipe recipe = LegendaryRecipe.GetByName(name);
@@ -295,9 +298,20 @@ namespace LegendaryRecipeDefiner
         }
 
 
+        public static void CreateNewLegendaryRecipe(string name, PartUpdate[] updates)
+        {
+
+        }
+
         public static void ChangeLegendaryRecipeSelect(string name, PartUpdate[] updates)
         {
             LegendaryRecipe recipe = LegendaryRecipe.GetByName(name);
+            if(recipe == null)
+            {
+                CreateNewLegendaryRecipe(name, updates);
+                return;
+            }    
+
             foreach (PartUpdate update in updates)
             {
                 if (update.partID == MachinePart.RightFurnace || update.partID == MachinePart.LeftFurnace)
@@ -320,7 +334,9 @@ namespace LegendaryRecipeDefiner
                     {
                         effects = update.effects;
                     }
-                    (GetMachinePart(recipe, update.partID) as DesiredItemPotionEffectsScriptableObject).effects = effects;
+                    
+                    if((GetMachinePart(recipe, update.partID) as DesiredItemPotionEffectsScriptableObject))
+                        (GetMachinePart(recipe, update.partID) as DesiredItemPotionEffectsScriptableObject).effects = effects;
                 }
             }
         }
@@ -350,15 +366,16 @@ namespace LegendaryRecipeDefiner
             }
         }
 
-        static void DeserializeRecipes()
+        public static void DeserializeRecipes()
         {
-            string target = Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location) + "/Recipe Blueprints/" + target_recipes + ".json";
+            string target = current_directory + "/Recipe Blueprints/" + target_recipes + ".json";
             if (!File.Exists(target))
             {
                 if (error_op)
                     Debug.LogError("No alternative recipe JSON could be found at " + target + ".");
                 return;
             }
+
             SerializedRecipeList json = Newtonsoft.Json.JsonConvert.DeserializeObject<SerializedRecipeList>(File.ReadAllText(target));
             List<PartUpdate> update = new List<PartUpdate>();
             List<PotionEffect> effects = new List<PotionEffect>();
@@ -367,10 +384,12 @@ namespace LegendaryRecipeDefiner
             {
                 foreach (SerializedUpdate section in recipe.recipe)
                 {
+                    // add alchemy ingredient requirement
                     if (section.part == MachinePart.RightFurnace || section.part == MachinePart.LeftFurnace)
                     {
                         update.Add(new PartUpdate(section.part, null, AlchemyMachineProduct.GetByName(section.components.Count > 0 ? section.components[0] : null)));
                     }
+                    // add potion requirement
                     else
                     {
                         foreach (string effectString in section.components)
@@ -382,6 +401,7 @@ namespace LegendaryRecipeDefiner
                     }
                 }
 
+                // only update recipe when given valid updates
                 if (update.Count > 0)
                 {
                     ChangeLegendaryRecipeSelect(recipe.name, update.ToArray());
@@ -393,7 +413,7 @@ namespace LegendaryRecipeDefiner
 
         [HarmonyPatch(typeof(AlchemyMachineObject), nameof(AlchemyMachineObject.GetSuitableLegendaryRecipe))]
         [HarmonyPrefix]
-        public static bool PreLegendaryCheck(LegendaryRecipe __result)
+        public static bool PreLegendaryCheck()
         {
             AlchemyMachineObject machine = Managers.Ingredient.alchemyMachineSubManager.alchemyMachine;
             LegendaryRecipe result = null;
@@ -416,6 +436,7 @@ namespace LegendaryRecipeDefiner
                 }
             }
 
+            // allows for recipes with less ingredients than usual (mysterious substances still generate normally)
             if(result && machine.tooFewIngredients != 0)
             {
                 lastMinimum = machine.tooFewIngredients;
@@ -569,7 +590,7 @@ namespace LegendaryRecipeDefiner
             string tempURL = __result.url.Substring(__result.url.LastIndexOf('/') + 1);
             currentSavedFile = tempURL.Substring(0, tempURL.Length - 7);
 
-            string target = Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location) + "/Saved Recipes/" + currentSavedFile + ".json";
+            string target = current_directory + "/Saved Recipes/" + currentSavedFile + ".json";
             File.WriteAllText(target, stringToBeSaved);
 
             AddSavedRecipes(stringToBeSaved);
@@ -598,7 +619,7 @@ namespace LegendaryRecipeDefiner
                 }
             }
 
-            string target = Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location) + "/Saved Recipes/"+currentLoadedFile+".json";
+            string target = current_directory + "/Saved Recipes/"+currentLoadedFile+".json";
             if (!File.Exists(target))
                 return;
             
@@ -612,7 +633,7 @@ namespace LegendaryRecipeDefiner
             string tempURL = __instance.url.Substring(__instance.url.LastIndexOf('/') + 1);
             string toBeDeleted = tempURL.Substring(0, tempURL.Length - 7);
 
-            string target = Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location) + "/Saved Recipes/" + toBeDeleted + ".json";
+            string target = current_directory + "/Saved Recipes/" + toBeDeleted + ".json";
             if(File.Exists(target))
             {
                 File.Delete(target);
