@@ -6,7 +6,6 @@ using BepInEx;
 using HarmonyLib;
 
 using UnityEngine;
-using UnityEngine.SceneManagement;
 
 using PotionCraft.ScriptableObjects;
 using PotionCraft.ScriptableObjects.AlchemyMachineProducts;
@@ -14,9 +13,15 @@ using PotionCraft.ManagersSystem;
 using PotionCraft.ManagersSystem.SaveLoad;
 using PotionCraft.ManagersSystem.Ingredient;
 using PotionCraft.QuestSystem.DesiredItems;
+using PotionCraft.ObjectBased;
 using PotionCraft.ObjectBased.AlchemyMachine;
+using PotionCraft.ObjectBased.AlchemyMachineProduct;
 using PotionCraft.ObjectBased.UIElements.Bookmarks;
 using PotionCraft.ObjectBased.UIElements.Books.RecipeBook;
+using PotionCraft.ObjectBased.UIElements.FinishLegendarySubstanceMenu;
+
+using YamlDotNet.Serialization;
+using YamlDotNet.Serialization.NamingConventions;
 
 
 namespace LegendaryRecipeDefiner
@@ -26,40 +31,100 @@ namespace LegendaryRecipeDefiner
     {
         public const string pluginGuid = "fgvb.potioncraft.legendaryrecipedefiner";
         public const string pluginName = "LegendaryRecipeDefiner";
-        public const string pluginVersion = "1.0.0.0";
+        public const string pluginVersion = "1.0.3.0";
 
-        static string current_directory = "";
-        static string target_recipes = "";
-        static bool error_op = true;
+        
+        protected static string current_directory = "";
+        protected static string currentLoadedFile = "";
+        protected static string currentSavedFile = "";
+        private static string stringToBeSaved = "";
 
-        static string currentLoadedFile = "";
-        static string currentSavedFile = "";
-        static string stringToBeSaved = "";
+        private static IDeserializer deserializer;
+        private static ISerializer serializer;
 
-        public static int lastMinimum = -1;
+        private static int lastMinimum = -1;
+        private static bool hasSubstanceLoadedExternally = false;
 
+        private static LRDSettings settings = null;
+        public static LRDSettings Settings
+        {
+            get => settings;
+        }
         public static LegendaryRecipeDefiner Instance { get; set; } = null;
 
 
-        public void Awake()
+        private void Awake()
         {
             if (!Instance)
             {
                 Instance = this;
                 Harmony.CreateAndPatchAll(typeof(LegendaryRecipeDefiner));
+                deserializer = new DeserializerBuilder().WithNamingConvention(CamelCaseNamingConvention.Instance).Build();
+                serializer = new SerializerBuilder().WithNamingConvention(CamelCaseNamingConvention.Instance).Build();
                 current_directory = Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location);
-                string target = current_directory + "/settings.config";
-                if (!File.Exists(target))
-                {
-                    if (error_op)
-                        Debug.LogError("Config file for `LegendaryRecipeDefiner` could not be found.");
-                    else
-                        Debug.Log("Config file for `LegendaryRecipeDefiner` could not be found.");
-                    return;
-                }
-                string config = File.ReadAllText(target);
-                ParseConfig(config);
+                CreateStructure();
+                VerifyDataIntegrity();
             }
+        }
+
+        private static void CreateStructure()
+        {
+            string target = current_directory + "/settings.yml";
+            if (!File.Exists(target))
+            {
+                File.WriteAllText(target, serializer.Serialize(new LRDSettings()));
+            }
+            string config = File.ReadAllText(target);
+            settings = ParseConfig(config);
+
+            target = current_directory + "/Recipe Blueprints";
+            if (!Directory.Exists(target))
+            {
+                Directory.CreateDirectory(target);
+                string[] jsonFiles = Directory.GetFiles(current_directory, "*.yml", SearchOption.TopDirectoryOnly);
+                foreach (string fileName in jsonFiles)
+                {
+                    string name = fileName.Substring(fileName.LastIndexOf('\\') + 1);
+                    if (name != "settings.yml")
+                    {
+                        File.Move(fileName, target + "/" + name);
+                    }
+                }
+            }
+
+            target = current_directory + "/Saved Recipes";
+            if (!Directory.Exists(target))
+            {
+                Directory.CreateDirectory(target);
+            }
+        }
+
+        private static void VerifyDataIntegrity()
+        {
+            string target = current_directory + "/Recipe Blueprints";
+            string[] jsonFiles = Directory.GetFiles(target, "*.json", SearchOption.AllDirectories);
+            foreach (string fileName in jsonFiles)
+            {
+                SerializedRecipeList deser = deserializer.Deserialize<SerializedRecipeList>(File.ReadAllText(fileName));
+                string newFileName = fileName.Substring(0, fileName.LastIndexOf(".")) + ".yml";
+                File.WriteAllText(newFileName, serializer.Serialize(deser));
+                File.Delete(fileName);
+            }
+
+            target = current_directory + "/Saved Recipes";
+            jsonFiles = Directory.GetFiles(target, "*.json", SearchOption.AllDirectories);
+            foreach (string fileName in jsonFiles)
+            {
+                SerializedState deser = deserializer.Deserialize<SerializedState>(File.ReadAllText(fileName));
+                string newFileName = fileName.Substring(0, fileName.LastIndexOf(".")) + ".yml";
+                File.WriteAllText(newFileName, serializer.Serialize(deser));
+                File.Delete(fileName);
+            }
+        }
+
+        public static LRDSettings ParseConfig(string config)
+        {
+            return deserializer.Deserialize<LRDSettings>(config);
         }
 
 
@@ -67,7 +132,18 @@ namespace LegendaryRecipeDefiner
         public enum MachinePart
         {
             Unknown = -1, RightRetort, RightDripper, RhombusVessel, TriangularVessel, RightFurnace, DoubleVessel,
-            FloorVessel, LeftDripper, LeftRetort, SpiralVessel, LeftFurnace, TripletVesselLeft, TripletVesselCenter, TripletVesselRight
+            FloorVessel, LeftDripper, LeftRetort, SpiralVessel, LeftFurnace, TripletVesselLeft, TripletVesselCenter, TripletVesselRight,
+            Last
+        }
+
+        [Serializable]
+        public class LRDSettings
+        {
+            public string entry = "recipes_1.0";
+            public bool error_off_entry = false;
+            public bool allow_less_ingredients = true;
+            public bool allow_more_ingredients = true;
+            public bool allow_no_ingredients = true;
         }
 
 
@@ -77,6 +153,12 @@ namespace LegendaryRecipeDefiner
             public MachinePart part;
 
             public List<string> components;
+
+            public SerializedUpdate()
+            {
+                part = MachinePart.Unknown;
+                components = new List<string>();
+            }
 
             public SerializedUpdate(MachinePart part__, List<string> components__)
             {
@@ -98,6 +180,7 @@ namespace LegendaryRecipeDefiner
             public List<SerializedRecipe> recipes = new List<SerializedRecipe>();
         }
 
+
         [Serializable]
         public class SerializedSafeBookmark
         {
@@ -106,6 +189,15 @@ namespace LegendaryRecipeDefiner
             public int prefabIndex;
             public bool isMirrored;
             public int index;
+
+            public SerializedSafeBookmark()
+            {
+                positionX = -1;
+                positionY = -1;
+                prefabIndex = -1;
+                isMirrored = false;
+                index = -1;
+            }
 
             public SerializedSafeBookmark(float x, float y, int prefab, bool mirrored, int rail)
             {
@@ -131,15 +223,242 @@ namespace LegendaryRecipeDefiner
         [Serializable]
         public class SerializedSavedRecipe
         {
-            public PotionCraft.ObjectBased.UIElements.Books.RecipeBook.SerializedRecipe content;
-            public SerializedSafeBookmark mark;
+            public PotionCraft.ObjectBased.UIElements.Books.RecipeBook.SerializedRecipe content = null;
+            public SerializedSafeBookmark mark = new SerializedSafeBookmark();
         }
+
+
+        [Serializable]
+        public class SerializedSafeLedgeTargetData
+        {
+            public bool isItemOnLedge = false;
+            public float ledgePositionX = 0, ledgePositionY = 0;
+            public int itemIndexOnLedge = -1;
+
+            public SerializedSafeLedgeTargetData() { }
+            public SerializedSafeLedgeTargetData(bool _isItemOnLedge, Vector2 ledgePosition, int _itemIndexOnLedge)
+            {
+                isItemOnLedge = _isItemOnLedge;
+                ledgePositionX = ledgePosition.x;
+                ledgePositionY = ledgePosition.y;
+                itemIndexOnLedge = _itemIndexOnLedge;
+            }
+
+            public static SerializedLedgeTargetData SafeToNormal(SerializedSafeLedgeTargetData value)
+            {
+                SerializedLedgeTargetData result = new SerializedLedgeTargetData();
+                result.isItemOnLedge = value.isItemOnLedge;
+                result.ledgePosition = new Vector2(value.ledgePositionX, value.ledgePositionY);
+                result.itemIndexOnLedge = value.itemIndexOnLedge;
+                return result;
+            }
+        }
+
+        [Serializable]
+        public class SerializedSafeItemFromInventory
+        {
+            public string typeName = "";
+            public float positionX = -1, positionY = 0;
+            public float eulerAnglesX = 0, eulerAnglesY = 0, eulerAnglesZ = 0;
+            public string inventoryItemName = "";
+            public List<SerializedSafeLedgeTargetData> ledgeDataList = null;
+            public string data = "";
+
+            public SerializedSafeItemFromInventory() { }
+            public SerializedSafeItemFromInventory(string _typeName, Vector2 position, Vector3 eulerAngles, string _inventoryItemName, List<SerializedLedgeTargetData> _ledgeDataList, string _data)
+            {
+                typeName = _typeName;
+                positionX = position.x;
+                positionY = position.y;
+                eulerAnglesX = eulerAngles.x;
+                eulerAnglesY = eulerAngles.y;
+                eulerAnglesZ = eulerAngles.z;
+                inventoryItemName = _inventoryItemName;
+
+                if (_ledgeDataList != null)
+                {
+                    ledgeDataList = new List<SerializedSafeLedgeTargetData>();
+                    foreach (SerializedLedgeTargetData value in _ledgeDataList)
+                    {
+                        ledgeDataList.Add(new SerializedSafeLedgeTargetData(value.isItemOnLedge, value.ledgePosition, value.itemIndexOnLedge));
+                    }
+                }
+
+                data = _data;
+            }
+
+                public static SerializedItemFromInventory SafeToNormal(SerializedSafeItemFromInventory value)
+            {
+                SerializedItemFromInventory result = new SerializedItemFromInventory();
+                result.typeName = value.typeName;
+                result.position = new Vector2(value.positionX, value.positionY);
+                result.eulerAngles = new Vector3(value.eulerAnglesX, value.eulerAnglesY, value.eulerAnglesZ);
+                result.inventoryItemName = value.inventoryItemName;
+                result.ledgeDataList = new List<SerializedLedgeTargetData>();
+
+                if (value.ledgeDataList != null)
+                {
+                    foreach (SerializedSafeLedgeTargetData data in value.ledgeDataList)
+                    {
+                        result.ledgeDataList.Add(SerializedSafeLedgeTargetData.SafeToNormal(data));
+                    }
+                }
+                result.data = value.data;
+                return result;
+            }
+        }
+
+
+        [Serializable]
+        public class SafeColor
+        {
+            public float r = 0, g = 0, b = 0, a = 1;
+
+            public SafeColor() { }
+            public SafeColor(Color color)
+            {
+                r = color.r;
+                g = color.g;
+                b = color.b;
+                a = color.a;
+            }
+
+            public Color ToColor()
+            {
+                return new Color(r, g, b, a);
+            }
+        }
+
+        [Serializable]
+        public class SafeColorList
+        {
+            public List<SafeColor> colorsList = new List<SafeColor>();
+        }
+
+        [Serializable]
+        public class SafeSkinSettings
+        {
+            public string currentIconName = string.Empty;
+            public SafeColor currentIconColor1;
+            public SafeColor currentIconColor2;
+            public SafeColor currentIconColor3;
+            public SafeColor currentIconColor4;
+            public string currentCustomTitle = string.Empty;
+            public bool isCurrentTitleCustom;
+            public string currentDescription = string.Empty;
+            public bool isCurrentIconCustom;
+            public bool isCurrentIconColor1Custom;
+            public bool isCurrentIconColor2Custom;
+            public bool isCurrentIconColor3Custom;
+            public bool isCurrentIconColor4Custom;
+            public int colorsCount;
+
+            public SafeSkinSettings() { }
+            public SafeSkinSettings(SerializedAlchemyMachineProductSkinSettings settings)
+            {
+                currentIconName = settings.currentIconName;
+                currentIconColor1 = new SafeColor(settings.currentIconColor1);
+                currentIconColor2 = new SafeColor(settings.currentIconColor2);
+                currentIconColor3 = new SafeColor(settings.currentIconColor3);
+                currentIconColor4 = new SafeColor(settings.currentIconColor4);
+                currentCustomTitle = settings.currentCustomTitle;
+                isCurrentTitleCustom = settings.isCurrentTitleCustom;
+                currentDescription = settings.currentDescription;
+                isCurrentIconCustom = settings.isCurrentIconCustom;
+                isCurrentIconColor1Custom = settings.isCurrentIconColor1Custom;
+                isCurrentIconColor2Custom = settings.isCurrentIconColor2Custom;
+                isCurrentIconColor3Custom = settings.isCurrentIconColor3Custom;
+                isCurrentIconColor4Custom = settings.isCurrentIconColor4Custom;
+                colorsCount = settings.colorsCount;
+            }
+
+            public SerializedAlchemyMachineProductSkinSettings ToSettings()
+            {
+                SerializedAlchemyMachineProductSkinSettings result = new SerializedAlchemyMachineProductSkinSettings();
+                result.currentIconName = currentIconName;
+                result.currentIconColor1 = currentIconColor1.ToColor();
+                result.currentIconColor2 = currentIconColor2.ToColor();
+                result.currentIconColor3 = currentIconColor3.ToColor();
+                result.currentIconColor4 = currentIconColor4.ToColor();
+                result.currentCustomTitle = currentCustomTitle;
+                result.isCurrentTitleCustom = isCurrentTitleCustom;
+                result.currentDescription = currentDescription;
+                result.isCurrentIconCustom = isCurrentIconCustom;
+                result.isCurrentIconColor1Custom = isCurrentIconColor1Custom;
+                result.isCurrentIconColor2Custom = isCurrentIconColor2Custom;
+                result.isCurrentIconColor3Custom = isCurrentIconColor3Custom;
+                result.isCurrentIconColor4Custom = isCurrentIconColor4Custom;
+                result.colorsCount = colorsCount;
+
+                return result;
+            }
+        }
+
+        [Serializable]
+        public class SafeComponentList
+        {
+            public List<SerializedRecipeReagent> components = new List<SerializedRecipeReagent>();
+            public List<AlchemyMachineSlot> componentsSlots = new List<AlchemyMachineSlot>();
+        }
+
+        [Serializable]
+        public class SerializedSafeRecipeData
+        {
+            public string name = "";
+            public List<SafeColorList> colorsList = null;
+            public SafeSkinSettings skinSettings = null;
+            public SafeComponentList usedComponents = null;
+            public RecipeBookPageContentType type;
+
+            public SerializedSafeRecipeData() { }
+            public SerializedSafeRecipeData(SerializedAlchemyMachineProductRecipeData data)
+            {
+                name = data.name;
+                colorsList = new List<SafeColorList>();
+                foreach (PotionCraft.Utils.CustomAnimator.ColorAnimator.ColorsList list in data.colorsList)
+                {
+                    SafeColorList colors = new SafeColorList();
+                    foreach (Color color in list.colors)
+                        colors.colorsList.Add(new SafeColor(color));
+                    colorsList.Add(colors);
+                }
+                skinSettings = new SafeSkinSettings(data.skinSettings);
+                usedComponents = new SafeComponentList();
+                usedComponents.components = data.usedComponents.GetComponents();
+                usedComponents.componentsSlots = data.usedComponents.GetComponentsSlots();
+                type = data.GetRecipeBookPageContentType();
+            }
+
+            public SerializedAlchemyMachineProductRecipeData ToData()
+            {
+                SerializedAlchemyMachineProductRecipeData result = new SerializedAlchemyMachineProductRecipeData(type);
+                result.name = name;
+                result.colorsList = new List<PotionCraft.Utils.CustomAnimator.ColorAnimator.ColorsList>();
+                foreach(SafeColorList list in colorsList)
+                {
+                    PotionCraft.Utils.CustomAnimator.ColorAnimator.ColorsList colors = new PotionCraft.Utils.CustomAnimator.ColorAnimator.ColorsList();
+                    foreach(SafeColor color in list.colorsList)
+                    {
+                        colors.colors.Add(color.ToColor());
+                    }
+                    result.colorsList.Add(colors);
+                }
+                result.skinSettings = skinSettings.ToSettings();
+                result.usedComponents = new PotionCraft.ManagersSystem.Potion.Entities.SerializedCompositeAlchemySubstanceComponents(usedComponents.components, usedComponents.componentsSlots);
+
+                return result;
+            }
+        }
+
 
         [Serializable]
         public class SerializedState
         {
             public List<SerializedSavedRecipe> recipes = new List<SerializedSavedRecipe>();
-            public SerializedAlchemyMachineProduct currentMachineContent = null;
+            public SerializedSafeItemFromInventory currentMachineContent = null;
+            public SerializedSafeRecipeData currentMachineRecipe = null;
+            public PotionCraft.ObjectBased.UIElements.Books.RecipeBook.SerializedRecipe previousRecipe = null;
+            public bool productChanged = false;
         }
 
         public class PartUpdate
@@ -158,15 +477,7 @@ namespace LegendaryRecipeDefiner
         }
 
 
-        [HarmonyPatch(typeof(IngredientManager.LegendaryRecipeSubManager), nameof(IngredientManager.LegendaryRecipeSubManager.OnManagerStart))]
-        [HarmonyPrefix]
-        public static void PostSettingInit()
-        {
-            DeserializeRecipes();
-        }
-
-
-        static InventoryItem GetMachinePart(LegendaryRecipe recipe, MachinePart partID)
+        public static InventoryItem GetMachinePart(LegendaryRecipe recipe, MachinePart partID)
         {
             switch (partID)
             {
@@ -204,7 +515,7 @@ namespace LegendaryRecipeDefiner
             return null;
         }
 
-        static void SetMachinePart(LegendaryRecipe recipe, MachinePart partID, InventoryItem value)
+        public static void SetMachinePart(LegendaryRecipe recipe, MachinePart partID, InventoryItem value)
         {
             switch (partID)
             {
@@ -255,14 +566,14 @@ namespace LegendaryRecipeDefiner
             }
         }
 
-        static List<string> ProductToList(InventoryItem product)
+        public static List<string> ProductToList(InventoryItem product)
         {
             if (product == null)
                 return new List<string>();
-            return new List<string> { (product as PotionCraft.ScriptableObjects.AlchemyMachineProducts.AlchemyMachineProduct).name };
+            return new List<string> { (product as AlchemyMachineProduct).name };
         }
 
-        static List<string> PotionToElementsList(InventoryItem item)
+        public static List<string> PotionToElementsList(InventoryItem item)
         {
             if (item == null)
                 return new List<string>();
@@ -275,9 +586,12 @@ namespace LegendaryRecipeDefiner
         }
 
 
-        static SerializedRecipe SerializeRecipe(string name)
+        public static SerializedRecipe SerializeRecipe(string name)
         {
             LegendaryRecipe recipe = LegendaryRecipe.GetByName(name);
+            if (recipe == null || name == "")
+                return null;
+
             SerializedRecipe section = new SerializedRecipe();
             section.name = name;
             section.recipe.Add(new SerializedUpdate(MachinePart.RightRetort, PotionToElementsList(recipe.rightRetort)));
@@ -308,7 +622,8 @@ namespace LegendaryRecipeDefiner
             LegendaryRecipe recipe = LegendaryRecipe.GetByName(name);
             if(recipe == null)
             {
-                CreateNewLegendaryRecipe(name, updates);
+                if (name != "")
+                    CreateNewLegendaryRecipe(name, updates);
                 return;
             }    
 
@@ -318,6 +633,10 @@ namespace LegendaryRecipeDefiner
                 {
                     SetMachinePart(recipe, update.partID, update.product);
                 }
+                else if(update.effects == null || update.effects.Length == 0)
+                {
+                    SetMachinePart(recipe, update.partID, null);
+                }
                 else
                 {
                     PotionEffect[] effects;
@@ -325,79 +644,73 @@ namespace LegendaryRecipeDefiner
                     {
                         effects = new PotionEffect[] { update.effects[0], update.effects[1], update.effects[2], update.effects[3], update.effects[4] };
                     }
-                    else if (update.effects.Length == 0)
-                    {
-                        SetMachinePart(recipe, update.partID, null);
-                        continue;
-                    }
                     else
                     {
                         effects = update.effects;
                     }
-                    
-                    if((GetMachinePart(recipe, update.partID) as DesiredItemPotionEffectsScriptableObject))
+
+                    if ((GetMachinePart(recipe, update.partID) as DesiredItemPotionEffectsScriptableObject))
+                    {
                         (GetMachinePart(recipe, update.partID) as DesiredItemPotionEffectsScriptableObject).effects = effects;
+                    }
+                    else if(settings.allow_more_ingredients)
+                    {
+                        DesiredItemPotionEffectsScriptableObject dipeso = (DesiredItemPotionEffectsScriptableObject)ScriptableObject.CreateInstance(typeof(DesiredItemPotionEffectsScriptableObject));
+                        dipeso.effects = effects;
+                        dipeso.noMoreEffects = true;
+                        SetMachinePart(recipe, update.partID, dipeso);
+                    }
                 }
             }
         }
 
-        static void ParseConfig(string config)
+        public static void DeserializeRecipes(string yamlLocation)
         {
-            config = config.Replace("\r", string.Empty);
-            string[] split = config.Split('\n');
-            foreach (string option in split)
-            {
-                string[] div = option.Split(':');
-                string head = div[0];
-                string context = div[1].Substring(1);
-                switch (head)
-                {
-                    case "entry":
-                        {
-                            target_recipes = context;
-                        }
-                        break;
-                    case "error_off_entry":
-                        {
-                            bool.TryParse(context, out error_op);
-                        }
-                        break;
-                }
-            }
-        }
-
-        public static void DeserializeRecipes()
-        {
-            string target = current_directory + "/Recipe Blueprints/" + target_recipes + ".json";
+            string target = yamlLocation;
             if (!File.Exists(target))
             {
-                if (error_op)
-                    Debug.LogError("No alternative recipe JSON could be found at " + target + ".");
+                if (settings.error_off_entry)
+                    Debug.LogError("No alternative recipe YAML could be found at " + target + ".");
                 return;
             }
 
-            SerializedRecipeList json = Newtonsoft.Json.JsonConvert.DeserializeObject<SerializedRecipeList>(File.ReadAllText(target));
+            SerializedRecipeList json = deserializer.Deserialize<SerializedRecipeList>(File.ReadAllText(target));
             List<PartUpdate> update = new List<PartUpdate>();
             List<PotionEffect> effects = new List<PotionEffect>();
 
             foreach (SerializedRecipe recipe in json.recipes)
             {
+                bool[] partUpdates = new bool[(int)MachinePart.Last];
+                if(recipe.recipe != null)
                 foreach (SerializedUpdate section in recipe.recipe)
                 {
+                    if (section.part == MachinePart.Unknown)
+                        continue;
+
                     // add alchemy ingredient requirement
                     if (section.part == MachinePart.RightFurnace || section.part == MachinePart.LeftFurnace)
                     {
-                        update.Add(new PartUpdate(section.part, null, AlchemyMachineProduct.GetByName(section.components.Count > 0 ? section.components[0] : null)));
+                        string nameToAsk = section.components.Count > 0 ? section.components[0] : null;
+                        update.Add(new PartUpdate(section.part, null, (nameToAsk == null || nameToAsk == "") ? null:AlchemyMachineProduct.GetByName(nameToAsk)));
                     }
                     // add potion requirement
                     else
                     {
                         foreach (string effectString in section.components)
                         {
-                            effects.Add(PotionEffect.GetByName(effectString));
+                            effects.Add(PotionEffect.GetByName(effectString, true));
                         }
                         update.Add(new PartUpdate(section.part, effects.ToArray()));
                         effects.Clear();
+                    }
+                    partUpdates[(int)section.part] = true;
+                }
+
+                for(int i=0; i<(int)MachinePart.Last; i++)
+                {
+                    if (!partUpdates[i])
+                    {
+                        update.Add(new PartUpdate((MachinePart)i, null));
                     }
                 }
 
@@ -413,7 +726,7 @@ namespace LegendaryRecipeDefiner
 
         [HarmonyPatch(typeof(AlchemyMachineObject), nameof(AlchemyMachineObject.GetSuitableLegendaryRecipe))]
         [HarmonyPrefix]
-        public static bool PreLegendaryCheck()
+        private static bool PreLegendaryCheck()
         {
             AlchemyMachineObject machine = Managers.Ingredient.alchemyMachineSubManager.alchemyMachine;
             LegendaryRecipe result = null;
@@ -437,7 +750,7 @@ namespace LegendaryRecipeDefiner
             }
 
             // allows for recipes with less ingredients than usual (mysterious substances still generate normally)
-            if(result && machine.tooFewIngredients != 0)
+            if(result && machine.tooFewIngredients != 0 && settings.allow_less_ingredients)
             {
                 lastMinimum = machine.tooFewIngredients;
                 machine.tooFewIngredients = 0;
@@ -452,7 +765,7 @@ namespace LegendaryRecipeDefiner
 
         [HarmonyPatch(typeof(AlchemyMachineObject), nameof(AlchemyMachineObject.OnBrewAnimationDone))]
         [HarmonyPostfix]
-        public static void PostBrew()
+        private static void PostBrew()
         {
             AlchemyMachineObject machine = Managers.Ingredient.alchemyMachineSubManager.alchemyMachine;
             if(machine.tooFewIngredients == 0)
@@ -460,13 +773,12 @@ namespace LegendaryRecipeDefiner
         }
 
 
-        static void AddSavedRecipes(string savedRecipes)
+        public static void AddSavedRecipes(SerializedState state)
         {
-            SerializedState deletedRecipes = Newtonsoft.Json.JsonConvert.DeserializeObject<SerializedState>(savedRecipes);
-            foreach (SerializedSavedRecipe rec in deletedRecipes.recipes)
+            foreach (SerializedSavedRecipe rec in state.recipes)
             {
                 int index = -1;
-                Bookmark.SerializedBookmark bookmark = rec.mark.ToDefault(ref index);
+                rec.mark.ToDefault(ref index);
                 PotionCraft.ObjectBased.UIElements.Books.RecipeBook.SerializedRecipe recipe = rec.content;
 
                 RecipeBook book = RecipeBook.Instance;
@@ -474,16 +786,9 @@ namespace LegendaryRecipeDefiner
                 book.savedRecipes[index] = newRecipe;
                 book.UpdateBookmarkIcon(index);
             }
-
-            if (deletedRecipes.currentMachineContent != null && Managers.Ingredient.alchemyMachineSubManager.alchemyMachine != null)
-            {
-                Managers.Ingredient.alchemyMachineSubManager.alchemyMachine.alchemyMachineBox.resultItemSpawner.SpawnResultItem(AlchemyMachineProduct.GetFromSerializedObject(deletedRecipes.currentMachineContent));
-                Managers.Ingredient.alchemyMachineSubManager.alchemyMachine.brewAnimationMainController.StartAnimation();
-                Managers.Ingredient.alchemyMachineSubManager.alchemyMachine.brewAnimationMainController.progressTime = PotionCraft.Settings.Settings<PotionCraft.ObjectBased.AlchemyMachine.Settings.BrewAnimationControllerSettings>.Asset.totalAnimationTime - 0.1f;
-            }
         }
 
-        static void RemoveSavedRecipes(List<IRecipeBookPageContent> removedRecipes)
+        public static void RemoveSavedRecipes(List<IRecipeBookPageContent> removedRecipes)
         {
             foreach (IRecipeBookPageContent targetRecipe in removedRecipes)
             {
@@ -494,8 +799,10 @@ namespace LegendaryRecipeDefiner
 
         [HarmonyPatch(typeof(SaveLoadManager), nameof(SaveLoadManager.LoadFile))]
         [HarmonyPrefix]
-        public static bool OnFileLoad(PotionCraft.SaveFileSystem.File saveFile)
+        private static bool BeforeFileLoad(PotionCraft.SaveFileSystem.File saveFile)
         {
+            DeserializeRecipes(current_directory + "/Recipe Blueprints/" + settings.entry + ".yml");
+
             string tempURL = saveFile.url.Substring(saveFile.url.LastIndexOf('/')+1);
             currentLoadedFile = tempURL.Substring(0, tempURL.Length - 7);
             return true;
@@ -504,7 +811,7 @@ namespace LegendaryRecipeDefiner
 
         [HarmonyPatch(typeof(SaveLoadManager), nameof(SaveLoadManager.SaveProgressToPool))]
         [HarmonyPrefix]
-        public static void BeforeFileSave()
+        private static void BeforeFileSave()
         {
             // SAVE CUSTOM RECIPES
             int count = -1;
@@ -547,17 +854,27 @@ namespace LegendaryRecipeDefiner
 
             SerializedState state = new SerializedState();
             state.recipes = recipesToSave;
-            if (Managers.Ingredient.alchemyMachineSubManager.alchemyMachine != null && Managers.Ingredient.alchemyMachineSubManager.alchemyMachine.alchemyMachineBox.resultItemSpawner.SpawnedInventoryItem != null)
+            if(Managers.Ingredient.alchemyMachineSubManager.alchemyMachine != null)
             {
-                state.currentMachineContent = Managers.Ingredient.alchemyMachineSubManager.alchemyMachine.alchemyMachineBox.resultItemSpawner.SpawnedInventoryItem.GetSerializedAlchemyMachineProduct();
+                state.previousRecipe = (FinishLegendarySubstanceWindow.Instance.previousAlchemyMachineProductRecipe == null) ? null : FinishLegendarySubstanceWindow.Instance.previousAlchemyMachineProductRecipe.GetSerializedRecipe();
+                state.productChanged = FinishLegendarySubstanceWindow.Instance.alchemyMachineProductChangedAfterSavingRecipe;
 
-                Managers.Ingredient.alchemyMachineSubManager.alchemyMachine.alchemyMachineBox.resultItemSpawner.SpawnedItem.DestroyItem();
-                Managers.Ingredient.alchemyMachineSubManager.alchemyMachine.alchemyMachineBox.resultItemSpawner.SpawnedInventoryItem = null;
-                Managers.Ingredient.alchemyMachineSubManager.alchemyMachine.finishLegendarySubstanceWindow.previousAlchemyMachineProductRecipe = null;
-                Managers.Ingredient.alchemyMachineSubManager.alchemyMachine.finishLegendarySubstanceWindow.Show(false, true);
+                if (Managers.Ingredient.alchemyMachineSubManager.alchemyMachine.alchemyMachineBox.resultItemSpawner.SpawnedItem != null)
+                {
+                    SerializedItemFromInventory save = Managers.Ingredient.alchemyMachineSubManager.alchemyMachine.alchemyMachineBox.resultItemSpawner.SpawnedItem.GetSerializedItemFromInventory();
+                    state.currentMachineContent = new SerializedSafeItemFromInventory(save.typeName, save.position, save.eulerAngles, save.inventoryItemName, save.ledgeDataList, save.data);
+                    state.currentMachineRecipe = new SerializedSafeRecipeData((SerializedAlchemyMachineProductRecipeData)Managers.Ingredient.alchemyMachineSubManager.alchemyMachine.alchemyMachineBox.resultItemSpawner.SpawnedInventoryItem.GetSerializedRecipeData().Clone());
+
+                    AlchemyMachineProductItem item = Managers.Ingredient.alchemyMachineSubManager.alchemyMachine.alchemyMachineBox.resultItemSpawner.SpawnedItem;
+                    item.DestroyItem();
+                    Managers.Ingredient.alchemyMachineSubManager.alchemyMachine.alchemyMachineBox.resultItemSpawner.SpawnedInventoryItem = null;
+                }
+                FinishLegendarySubstanceWindow.Instance.previousAlchemyMachineProductRecipe = null;
+                FinishLegendarySubstanceWindow.Instance.alchemyMachineProductChangedAfterSavingRecipe = true;
+                FinishLegendarySubstanceWindow.Instance.Show(false, true);
             }
 
-            string serialized = Newtonsoft.Json.JsonConvert.SerializeObject(state, Newtonsoft.Json.Formatting.Indented);
+            string serialized = serializer.Serialize(state);
             stringToBeSaved = serialized;
 
             RemoveSavedRecipes(removedRecipes);
@@ -565,7 +882,7 @@ namespace LegendaryRecipeDefiner
 
         [HarmonyPatch(typeof(SaveLoadManager), nameof(SaveLoadManager.SaveProgressToPool))]
         [HarmonyPostfix]
-        public static void OnFileSave(PotionCraft.SaveFileSystem.File __result)
+        private static void OnFileSave(PotionCraft.SaveFileSystem.File __result)
         {
             int count = -1;
             List<IRecipeBookPageContent> savedRecipes = RecipeBook.Instance.savedRecipes;
@@ -590,15 +907,38 @@ namespace LegendaryRecipeDefiner
             string tempURL = __result.url.Substring(__result.url.LastIndexOf('/') + 1);
             currentSavedFile = tempURL.Substring(0, tempURL.Length - 7);
 
-            string target = current_directory + "/Saved Recipes/" + currentSavedFile + ".json";
+            string target = current_directory + "/Saved Recipes/" + settings.entry + " - " + currentSavedFile + ".yml";
             File.WriteAllText(target, stringToBeSaved);
 
-            AddSavedRecipes(stringToBeSaved);
+            SerializedState state = deserializer.Deserialize<SerializedState>(stringToBeSaved);
+            AddSavedRecipes(state);
+            if (Managers.Ingredient.alchemyMachineSubManager.alchemyMachine != null)
+            {
+                Managers.SaveLoad.SelectedProgressState.previousAlchemyMachineProductRecipe = state.previousRecipe;
+                Managers.SaveLoad.SelectedProgressState.alchemyMachineProductChangedAfterSavingRecipe = state.productChanged;
+
+                if (state.currentMachineContent != null)
+                {
+                    Managers.SaveLoad.SelectedProgressState.serializedCurrentAlchemyMachineProduct = state.currentMachineRecipe.ToData();
+                    Managers.SaveLoad.SelectedProgressState.withSpawnedProduct = true;
+
+                    SerializedItemFromInventory item = SerializedSafeItemFromInventory.SafeToNormal(state.currentMachineContent);
+                    AlchemyMachineProductItem.SpawnFromSerializedData(item, RoomIndex.Basement);
+
+                    Managers.Ingredient.alchemyMachineSubManager.alchemyMachine.brewAnimationMainController.StartAnimation();
+                    Managers.Ingredient.alchemyMachineSubManager.alchemyMachine.brewAnimationMainController.progressTime = PotionCraft.Settings.Settings<PotionCraft.ObjectBased.AlchemyMachine.Settings.BrewAnimationControllerSettings>.Asset.totalAnimationTime - 0.1f;
+                    hasSubstanceLoadedExternally = true;
+                    Managers.Ingredient.alchemyMachineSubManager.alchemyMachine.alchemyMachineBox.resultItemSpawner.OnLoad();
+                    hasSubstanceLoadedExternally = false;
+                }
+
+                FinishLegendarySubstanceWindow.Instance.OnLoad();
+            }
         }
 
         [HarmonyPatch(typeof(RecipeBook), nameof(RecipeBook.OnLoad))]
         [HarmonyPostfix]
-        public static void PostRecipeInit()
+        private static void PostRecipeInit()
         {
             int count = -1;
             List<IRecipeBookPageContent> savedRecipes = RecipeBook.Instance.savedRecipes;
@@ -619,25 +959,62 @@ namespace LegendaryRecipeDefiner
                 }
             }
 
-            string target = current_directory + "/Saved Recipes/"+currentLoadedFile+".json";
+            string target = current_directory + "/Saved Recipes/"+ settings.entry + " - " + currentLoadedFile + ".yml";
             if (!File.Exists(target))
                 return;
-            
-            AddSavedRecipes(File.ReadAllText(target));
+
+            SerializedState deletedRecipes = deserializer.Deserialize<SerializedState>(File.ReadAllText(target));
+            AddSavedRecipes(deletedRecipes);
+        }
+
+        [HarmonyPatch(typeof(ResultItemSpawner), nameof(ResultItemSpawner.OnLoad))]
+        [HarmonyPrefix]
+        private static void PreLegendarySpawn()
+        {
+            if (hasSubstanceLoadedExternally)
+                return;
+
+            string target = current_directory + "/Saved Recipes/" + settings.entry + " - " + currentLoadedFile + ".yml";
+            if (!File.Exists(target))
+                return;
+            SerializedState deletedRecipes = deserializer.Deserialize<SerializedState>(File.ReadAllText(target));
+            if (Managers.Ingredient.alchemyMachineSubManager.alchemyMachine != null)
+            {
+                Managers.SaveLoad.SelectedProgressState.previousAlchemyMachineProductRecipe = deletedRecipes.previousRecipe;
+                Managers.SaveLoad.SelectedProgressState.alchemyMachineProductChangedAfterSavingRecipe = deletedRecipes.productChanged;
+
+                if (deletedRecipes.currentMachineContent != null)
+                {
+                    Managers.SaveLoad.SelectedProgressState.withSpawnedProduct = true;
+                    Managers.SaveLoad.SelectedProgressState.serializedCurrentAlchemyMachineProduct = deletedRecipes.currentMachineRecipe.ToData();
+
+                    SerializedItemFromInventory item = SerializedSafeItemFromInventory.SafeToNormal(deletedRecipes.currentMachineContent);
+                    AlchemyMachineProductItem.SpawnFromSerializedData(item, RoomIndex.Basement);
+                }
+            }
         }
 
         [HarmonyPatch(typeof(PotionCraft.SaveFileSystem.File), nameof(PotionCraft.SaveFileSystem.File.Remove))]
         [HarmonyPostfix]
-        public static void PostSaveDelete(PotionCraft.SaveFileSystem.File __instance)
+        private static void PostSaveDelete(PotionCraft.SaveFileSystem.File __instance)
         {
             string tempURL = __instance.url.Substring(__instance.url.LastIndexOf('/') + 1);
             string toBeDeleted = tempURL.Substring(0, tempURL.Length - 7);
 
-            string target = current_directory + "/Saved Recipes/" + toBeDeleted + ".json";
+            string target = current_directory + "/Saved Recipes/" + settings.entry + " - " + toBeDeleted + ".yml";
             if(File.Exists(target))
             {
                 File.Delete(target);
             }
+        }
+
+
+        [HarmonyPatch(typeof(AlchemyMachineObject), nameof(AlchemyMachineObject.GetIngredientsCount))]
+        [HarmonyPostfix]
+        private static void PostIngredientCheck(ref int __result)
+        {
+            if (__result == 0 && settings.allow_no_ingredients)
+                __result = 1;
         }
     }
 }

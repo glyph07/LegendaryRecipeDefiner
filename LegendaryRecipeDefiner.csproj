@@ -88,6 +88,9 @@
     <Reference Include="UnityEngine.Physics2DModule">
       <HintPath>..\Libraries\UnityEngine.Physics2DModule.dll</HintPath>
     </Reference>
+    <Reference Include="YamlDotNet">
+      <HintPath>..\Libraries\YamlDotNet.dll</HintPath>
+    </Reference>
   </ItemGroup>
   <ItemGroup>
     <Compile Include="LegendaryRecipeDefiner.cs" />
